@@ -4,7 +4,7 @@
 #include "RF24.h"
 
 // Wi-Fi Configurações
-const char* ssid = "JammerAP";
+const char* ssid = "Motorola";
 const char* password = "12345678";
 const char* webPassword = "123456"; // senha da interface web
 
