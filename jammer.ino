@@ -1,103 +1,123 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 #include <SPI.h>
 #include "RF24.h"
-#include <ezButton.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <string>
-#include "images.h"
 
-//Im using nodemcu esp8266
-RF24 radio(2, 4);//CE, CSN
+// Wi-Fi Configurações
+const char* ssid = "JammerAP";
+const char* password = "12345678";
+const char* webPassword = "123456"; // senha da interface web
+
+RF24 radio(2, 4); // CE, CSN
 byte i = 45;
-ezButton buton(3);
-Adafruit_SSD1306 display = Adafruit_SSD1306(128, 64, &Wire);
+ESP8266WebServer server(80);
 
 const int wifiFrequencies[] = {
-  2412,
-  2417,
-  2422,
-  2427,
-  2432,
-  2437,
-  2442,
-  2447,
-  2452,
-  2457,
-  2462
+  2412, 2417, 2422, 2427, 2432,
+  2437, 2442, 2447, 2452, 2457, 2462
 };
 
+const char* modes[] = {
+  "BLE & All 2.4 GHz",
+  "Just Wi-Fi",
+  "Waiting Idly :("
+};
+uint8_t attack_type = 2;
+bool loggedIn = false;
 
-void displayMessage(const char* line, uint8_t x = 55, uint8_t y = 22, const unsigned char* bitmap = helpy_menu_image) {
-  //Radio'yu kapatıp SPI'yi bırak
-  radio.powerDown();
-  SPI.end();
-  delay(10);
+// Página HTML de login
+String loginPage = R"rawliteral(
+  <html><body>
+    <h2>Login</h2>
+    <form action="/login" method="POST">
+      Senha: <input type="password" name="password">
+      <input type="submit" value="Entrar">
+    </form>
+  </body></html>
+)rawliteral";
 
-  //Bitmapi yazdirma
-  display.clearDisplay();
-  if (bitmap != nullptr) {
-    display.drawBitmap(0, 0, bitmap, 128, 64, WHITE);
+// Página principal com botões de seleção
+String controlPage() {
+  String page = "<html><body><h2>Selecionar Modo</h2>";
+  page += "<p>Modo atual: <b>" + String(modes[attack_type]) + "</b></p>";
+  for (int i = 0; i < 3; i++) {
+    page += "<form action='/set' method='POST'>";
+    page += "<input type='hidden' name='mode' value='" + String(i) + "'>";
+    page += "<input type='submit' value='" + String(modes[i]) + "'>";
+    page += "</form><br/>";
   }
-  display.setTextSize(1);
-  String text = String(line);
-  int16_t cursor_y = y;
-  int16_t maxWidth = 128 - x;
-  while (text.length() > 0) {
-    int16_t charCount = 0;
-    int16_t lineWidth = 0;
-    while (charCount < text.length() && lineWidth < maxWidth) {
-      charCount++;
-      lineWidth = 6 * charCount;
-    }
-    if (charCount < text.length()) {
-      int16_t lastSpace = text.substring(0, charCount).lastIndexOf(' ');
-      if (lastSpace > 0) {
-        charCount = lastSpace + 1;
-      }
-    }
-    display.setCursor(x, cursor_y);
-    display.println(text.substring(0, charCount));
-    text = text.substring(charCount);
-    cursor_y += 10;
-    if (cursor_y > 64) break;
-  }
-  display.display();
-
-  //Radyo işlemlerine devam etmek için SPI'yi yeniden başlat ve radio'yu aç
-  SPI.begin();
-  radio.powerUp();
-  delay(5);
-  // Jamming modunu yeniden başlat
-  radio.startConstCarrier(RF24_PA_MAX, i);
+  page += "</body></html>";
+  return page;
 }
 
-void addvertising() {
-  // Addvertising
-  for (size_t i = 0; i < 3; i++) {
-    displayMessage("", 60, 22, helpy_big_image);
-    delay(310);
-    displayMessage("", 60, 22, nullptr);
-    delay(300);
+void handleRoot() {
+  if (!loggedIn) {
+    server.send(200, "text/html", loginPage);
+  } else {
+    server.send(200, "text/html", controlPage());
   }
-  displayMessage("Jammer got up. Click the button and discover all modes!", 65, 6);
+}
+
+void handleLogin() {
+  if (server.method() == HTTP_POST) {
+    if (server.arg("password") == webPassword) {
+      loggedIn = true;
+      server.sendHeader("Location", "/");
+      server.send(303);
+    } else {
+      server.send(200, "text/html", "<p>Senha incorreta!</p>" + loginPage);
+    }
+  }
+}
+
+void handleSetMode() {
+  if (!loggedIn) {
+    server.send(403, "text/plain", "Acesso negado");
+    return;
+  }
+  if (server.hasArg("mode")) {
+    int mode = server.arg("mode").toInt();
+    if (mode >= 0 && mode <= 2) {
+      attack_type = mode;
+      Serial.println("Modo alterado para: " + String(modes[attack_type]));
+    }
+  }
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void setupWiFi() {
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid, password);
+  Serial.println("Wi-Fi iniciado");
+  Serial.println("IP: " + WiFi.softAPIP().toString());
+}
+
+void setupWebServer() {
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/login", HTTP_POST, handleLogin);
+  server.on("/set", HTTP_POST, handleSetMode);
+  server.begin();
+  Serial.println("Servidor Web iniciado");
+}
+
+void fullAttack() {
+  for (size_t i = 0; i < 80; i++) {
+    radio.setChannel(i);
+  }
+}
+
+void wifiAttack() {
+  for (int i = 0; i < sizeof(wifiFrequencies) / sizeof(wifiFrequencies[0]); i++) {
+    radio.setChannel(wifiFrequencies[i] - 2400);
+  }
 }
 
 void setup() {
   Serial.begin(9600);
-  buton.setDebounceTime(320);
-  pinMode(3, INPUT_PULLUP);
-  Wire.begin(14, 12);  //SDA, SCL
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("OLED screen not found!"));
-    exit(0);
-  }
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
-  display.setCursor(0, 0);
-  display.print(feragatname);
-  display.display();
-  delay(900);
+  setupWiFi();
+  setupWebServer();
+
   if (radio.begin()) {
     delay(200);
     radio.setAutoAck(false); 
@@ -110,36 +130,14 @@ void setup() {
     radio.setCRCLength(RF24_CRC_DISABLED);
     radio.printPrettyDetails();
     radio.startConstCarrier(RF24_PA_MAX, i);
-    addvertising();
   } else {
-    Serial.println("BLE Jammer couldn't be started!");
-    displayMessage("Jammer Error!");
+    Serial.println("BLE Jammer não pôde ser iniciado!");
   }
 }
 
-void fullAttack() {
-  for (size_t i = 0; i < 80; i++) {
-    radio.setChannel(i);
-  }
-}
-void wifiAttack() {
-  for (int i = 0; i < sizeof(wifiFrequencies) / sizeof(wifiFrequencies[0]); i++) {
-    radio.setChannel(wifiFrequencies[i] - 2400);
-  }
-}
-
-const char* modes[] = {
-  "BLE & All 2.4 GHz",
-  "Just Wi-Fi",
-  "Waiting Idly :("
-};
-uint8_t attack_type = 2;
 void loop() {
-  buton.loop();
-  if (buton.isPressed()) {
-    attack_type = (attack_type + 1) % 3;
-    displayMessage((String(modes[attack_type])+" Mode").c_str());
-  }
+  server.handleClient();
+
   switch (attack_type) {
     case 0:
       fullAttack();
@@ -148,6 +146,7 @@ void loop() {
       wifiAttack();
       break;
     case 2:
+      // Idle
       break;
   }
 }
